@@ -55,10 +55,18 @@ export function initDavBase(config: Config): void {
 function authHeadersFor(
   session: Pick<SessionData, 'username' | 'authMode'> & { password?: string },
 ): Record<string, string> {
+  // Node's undici crashes decompressing large gzip CardDAV/CalDAV REPORT
+  // bodies (`assert(!this.paused)`). Ask the DAV server for identity encoding
+  // so address-book loads (hundreds of vCards) stay reliable. Forwarded on
+  // tsdav helpers via their `headers` option as well as `davFetch`.
+  const noGzip = { 'Accept-Encoding': 'identity' } as const;
   if (session.authMode === 'remote-user') {
-    return { [remoteUserHeader]: session.username };
+    return { [remoteUserHeader]: session.username, ...noGzip };
   }
-  return _getBasicAuthHeaders({ username: session.username, password: session.password ?? '' });
+  return {
+    ..._getBasicAuthHeaders({ username: session.username, password: session.password ?? '' }),
+    ...noGzip,
+  };
 }
 
 /**
@@ -157,7 +165,12 @@ function encodeSegment(id: string): string {
  */
 function davFetch(url: string, init: RequestInit = {}): Promise<Response> {
   assertDavTarget(url);
-  return fetch(url, { ...init, redirect: 'error' });
+  const headers = new Headers(init.headers);
+  // See authHeadersFor — belt-and-suspenders for call sites that omit it.
+  if (!headers.has('Accept-Encoding')) {
+    headers.set('Accept-Encoding', 'identity');
+  }
+  return fetch(url, { ...init, headers, redirect: 'error' });
 }
 
 // Coerce a tsdav displayName (can be string or object with a #text key) to string.
